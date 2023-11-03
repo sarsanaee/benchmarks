@@ -1,7 +1,7 @@
 FLEXKVS_COMMON=hashtable.o ialloc.o jenkins_hash.o settings.o
 BENCH_COMMON=rng.o commandline.o workload.o
 
-TAS_CODE?=${HOME}/tas/code
+TAS_CODE?=/home/alireza/tas
 
 CFLAGS = -std=gnu99 -g -Wall -Icommon/include -O3 -march=native \
 	-I$(TAS_CODE)/include -I$(TAS_CODE)/lib/tas/include
@@ -11,7 +11,7 @@ LDLIBS = -lrt -lm -lpthread -lrt -ldl
 include ../common/Makefile.mtcp
 
 
-all: flexkvs kvsbench flexkvs-ll
+all: flexkvs kvsbench # flexkvs-ll
 all-sockets: flexkvs kvsbench
 all-mtcp: flexkvs-mtcp kvsbench-mtcp
 all-ll: flexkvs-ll

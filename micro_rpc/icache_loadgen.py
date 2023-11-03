@@ -1,4 +1,6 @@
+#!/usr/bin/python3
 import sys
+
 
 N = int(sys.argv[1])
 M = int(sys.argv[2])

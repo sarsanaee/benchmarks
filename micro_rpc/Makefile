@@ -1,7 +1,7 @@
 TARGETS = echoserver_linux testclient_linux echoserver_ll \
 	  echoserver_mtcp testclient_mtcp
 
-TAS_CODE?=${HOME}/tas/code
+TAS_CODE?=${HOME}/tas
 
 CFLAGS = -std=gnu99 -g -Wall -O3 -march=native \
 	-I$(TAS_CODE)/include -I$(TAS_CODE)/lib/tas/include
@@ -39,19 +39,19 @@ testclient_mtcp: testclient.mtcp.o
 
 
 icache_fill1.S: icache_loadgen.py
-	python icache_loadgen.py 32768 1 icache_fill1 >$@
+	python3 icache_loadgen.py 32768 1 icache_fill1 >$@
 
 icache_fill8.S: icache_loadgen.py
-	python icache_loadgen.py 4096 8 icache_fill8 >$@
+	python3 icache_loadgen.py 4096 8 icache_fill8 >$@
 
 icache_fill64.S: icache_loadgen.py
-	python icache_loadgen.py 512 64 icache_fill64 >$@
+	python3 icache_loadgen.py 512 64 icache_fill64 >$@
 
 icache_fill256.S: icache_loadgen.py
-	python icache_loadgen.py 128 256 icache_fill256 >$@
+	python3 icache_loadgen.py 128 256 icache_fill256 >$@
 
 icache_fill512.S: icache_loadgen.py
-	python icache_loadgen.py 64 512 icache_fill512 >$@
+	python3 icache_loadgen.py 64 512 icache_fill512 >$@
 
 
 %.mtcp.o: %.c
