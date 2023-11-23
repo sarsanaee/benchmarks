@@ -46,8 +46,8 @@
 #include "../common/socket_shim.h"
 #include "../common/microbench.h"
 
-//#define PRINT_STATS
-//#define PRINT_TSS
+#define PRINT_STATS
+#define PRINT_TSS
 #ifdef PRINT_STATS
 #   define STATS_ADD(c, f, n) __sync_fetch_and_add(&c->f, n)
 #   define STATS_TS(n) uint64_t n = get_nanos()
@@ -458,6 +458,8 @@ static void *thread_run(void *arg)
                     continue;
                 }
 
+                printf("timestamp app rx: %" PRIu64 "\n", get_nanos());
+
                 /* we have a complete request */
                 if (op_delay > 0) {
                     co->opaque = kill_cycles(op_delay, co->opaque);
@@ -501,6 +503,9 @@ static void *thread_run(void *arg)
                     conn_epupdate(co, c, 1);
                     continue;
                 }
+
+                printf("timestamp app tx: %" PRIu64 "\n", get_nanos());
+
 
                 /* we sent out the whole response */
                 conn_epupdate(co, c, 0);

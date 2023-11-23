@@ -58,8 +58,8 @@
     do { printf("%d.%d: ", (int) c->id, co->fd); \
          printf(x); } while (0)*/
 
-//#define PRINT_STATS
-//#define PRINT_TSS
+// #define PRINT_STATS
+// #define PRINT_TSS
 #ifdef PRINT_STATS
 #   define STATS_ADD(c, f, n) c->f += n
 #else
@@ -101,8 +101,10 @@ struct connection {
     struct sockaddr_in *addr;
 
     struct connection *next_closed;
+    uint64_t last_sent;
 #ifdef PRINT_STATS
     uint64_t cnt;
+
 #endif
 };
 
@@ -122,6 +124,7 @@ struct core {
     uint64_t tx_cycles;
 #endif
     uint32_t *hist;
+    uint32_t *hist2;
     int ep;
     ssctx_t sc;
 #ifdef USE_MTCP
@@ -160,6 +163,15 @@ static inline void record_latency(struct core *c, uint64_t nanos)
         bucket = HIST_BUCKETS - 1;
     }
     __sync_fetch_and_add(&c->hist[bucket], 1);
+}
+
+static inline void record_latency2(struct core *c, uint64_t nanos)
+{
+    size_t bucket = ((nanos / 1000) - HIST_START_US) / HIST_BUCKET_US;
+    if (bucket >= HIST_BUCKETS) {
+        bucket = HIST_BUCKETS - 1;
+    }
+    __sync_fetch_and_add(&c->hist2[bucket], 1);
 }
 
 #ifdef PRINT_STATS
@@ -285,6 +297,12 @@ static void prepare_core(struct core *c)
         abort();
     }
 
+    /* Allocate histogram */
+    if ((c->hist2 = calloc(HIST_BUCKETS, sizeof(*c->hist2))) == NULL) {
+        fprintf(stderr, "[%d] allocating histogram failed\n", cn);
+        abort();
+    }
+
     /* Allocate connection structs */
     if ((c->conns = calloc(num_conns, sizeof(*c->conns))) == NULL) {
         fprintf(stderr, "[%d] allocating connection structs failed\n", cn);
@@ -367,8 +385,13 @@ static inline int conn_receive(struct core *c, struct connection *co)
             co->rx_remain -= ret;
             if (co->rx_remain == 0) {
                 /* received whole message */
+                // printf("timestamp app rx: %" PRIu64 "\n", get_nanos());
                 __sync_fetch_and_add(&c->messages, 1);
                 record_latency(c, get_nanos() - *rx_ts);
+
+                // // record latency from second 64 bytes of receive buffer
+                // record_latency2(c, *(uint64_t *)(rx_buf + 64) - *(uint64_t *)(rx_buf));
+
                 co->rx_remain = message_size;
                 co->pending--;
 #ifdef PRINT_STATS
@@ -420,6 +443,7 @@ static inline int conn_send(struct core *c, struct connection *co)
     tx_buf = co->tx_buf;
     tx_ts = tx_buf;
     while ((co->pending < max_pending || max_pending == 0) &&
+        // (co->tx_cnt < num_msgs || num_msgs == 0) && ret > 0 && get_nanos() - co->last_sent > 1000000000)
         (co->tx_cnt < num_msgs || num_msgs == 0) && ret > 0)
     {
         /* timestamp if starting a new message */
@@ -427,13 +451,18 @@ static inline int conn_send(struct core *c, struct connection *co)
             *tx_ts = get_nanos();
         }
 
+
         STATS_ADD(c, tx_calls, 1);
 #ifdef PRINT_STATS
         tsc = get_nanos_stats();
 #endif
-        ret = ss_write(sc, fd, tx_buf + message_size - co->tx_remain,
-            co->tx_remain);
-        STATS_ADD(c, tx_cycles, get_nanos_stats() - tsc);
+
+        // if (get_nanos() - co->last_sent > 1000000) {
+            co->last_sent = get_nanos();
+            ret = ss_write(sc, fd, tx_buf + message_size - co->tx_remain,
+                co->tx_remain);
+            STATS_ADD(c, tx_cycles, get_nanos_stats() - tsc);
+
         if (ret > 0) {
             STATS_ADD(c, tx_bytes, ret);
             /* sent some data */
@@ -443,6 +472,8 @@ static inline int conn_send(struct core *c, struct connection *co)
             co->tx_remain -= ret;
             if (co->tx_remain == 0) {
                 /* sent whole message */
+
+                // printf("timestamp app tx: %" PRIu64 "\n", get_nanos());
                 co->pending++;
                 co->tx_cnt++;
                 co->tx_remain = message_size;
@@ -464,6 +495,7 @@ static inline int conn_send(struct core *c, struct connection *co)
             wait_wr = 1;
             STATS_ADD(c, tx_fail, 1);
         }
+        // }
     }
 
     /* make sure we epoll for write iff we're actually blocked on writes */
@@ -496,7 +528,7 @@ static inline void conn_events(struct core *c, struct connection *co,
     int status;
     socklen_t slen;
 #ifdef PRINT_STATS
-    uint64_t tsc;
+    static uint64_t tsc = 0;
 #endif
 
     if (co->state == CONN_CONNECTING)
@@ -538,9 +570,16 @@ static inline void conn_events(struct core *c, struct connection *co,
     }
 
     /* send out requests */
-    if (conn_send(c, co) != 0) {
-        return;
-    }
+    // printf("%lu %lu\n", get_nanos(), tsc);
+    // if (get_nanos() - tsc > 1000000000) {
+    // 	tsc = get_nanos();
+    // 	printf("#####################%lu %lu\n", get_nanos(), tsc);
+    	if (conn_send(c, co) != 0) {
+		printf("Ever here?\n");
+        	return;
+    	}
+	// return;
+    // }
 
     if ((events & SS_EPOLLHUP) != 0) {
         conn_error(c, co, "error on hup");
@@ -662,8 +701,10 @@ static void *thread_run(void *arg)
     }
 
     while (1) {
-        if (c->closed_conns != NULL)
+        if (c->closed_conns != NULL) {
+	    printf("moooore\n");
             connect_more(c);
+	}
 
         /* epoll, wait for events */
         if ((ret = ss_epoll_wait(sc, ep, evs, num_evs, -1)) < 0) {
