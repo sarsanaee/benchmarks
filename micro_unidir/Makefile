@@ -1,6 +1,6 @@
 TARGETS = unidir_linux unidir_ll unidir_mtcp
 
-TAS_CODE?=${HOME}/tas/code
+TAS_CODE?=${HOME}/tas/
 
 CFLAGS = -std=gnu99 -g -Wall -O3 -march=native \
 	-I$(TAS_CODE)/include -I$(TAS_CODE)/lib/tas/include
@@ -9,16 +9,22 @@ LDLIBS = -lrt
 
 include ../common/Makefile.mtcp
 
-all: unidir_linux unidir_ll
+all: unidir_linux unidir_ll unidir_ll_server unidir_ll_client
 all-sockets: unidir_linux
 all-mtcp: unidir_mtcp
-all-ll: unidir_ll
+all-ll: unidir_ll unidir_ll_server unidir_ll_client
 
 
 unidir_linux: unidir.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 unidir_ll: unidir_ll.o $(TAS_CODE)/lib/libtas.so
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+unidir_ll_server: unidir_ll_server.o $(TAS_CODE)/lib/libtas.so
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+unidir_ll_client: unidir_ll_client.o $(TAS_CODE)/lib/libtas.so
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 unidir_mtcp: unidir.mtcp.o
