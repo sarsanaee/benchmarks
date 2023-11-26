@@ -1,27 +1,3 @@
-/*
- * Copyright 2019 University of Washington, Max Planck Institute for
- * Software Systems, and The University of Texas at Austin
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sublicense, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -33,9 +9,9 @@
 #include <assert.h>
 
 #include "../common/microbench.h"
-#include "unidir.h"
+#include "unidir_ll_simple.h"
 
-#define MAX_EVENTS 32
+uint64_t allocated = 0;
 
 static inline uint64_t get_nanos(void)
 {
@@ -44,9 +20,41 @@ static inline uint64_t get_nanos(void)
     return (uint64_t) ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
 }
 
+// how about creating a new function for preparing buffers? // TODO: ALireza
+
+
+uint64_t send_tcp_message(struct flextcp_context* ctx, struct flextcp_connection *conn) {
+    void *buf;
+    uint64_t ret;
+
+    ret = flextcp_connection_tx_alloc(conn, MSG_SIZE - allocated, &buf);
+    if (ret < 0) {
+        fprintf(stderr, "flextcp_connection_tx_alloc failed\n");
+        exit(-1);
+    }
+
+    allocated += ret;
+
+    memset(buf, 1, ret);
+
+    if (allocated < MSG_SIZE) {
+        // printf("allocated %lu bytes, %lu ret\n", allocated, ret);
+        return 0;
+    }
+
+    // sending should be separated.
+    if (flextcp_connection_tx_send(ctx, conn, allocated) != 0) {
+        fprintf(stderr, "flextcp_connection_tx_send failed\n");
+        exit(-1);
+    } else {
+        ret = allocated;
+        allocated = 0;
+        return ret;
+    }
+}
+
 int main(int argc, char *argv[])
 {
-  void *buf;
   struct flextcp_context *ctx = malloc(sizeof(*ctx));
   struct flextcp_connection *conn = malloc(sizeof(*conn));
   struct flextcp_listener *listen = malloc(sizeof(*listen));
@@ -105,6 +113,11 @@ int main(int argc, char *argv[])
   // start another for loop for events and then send messages.
   int num;
   struct flextcp_event *ev;
+  uint64_t tx_bump = 0, rx_bump = 0;
+  uint64_t sent_bytes;
+//   uint64_t total_recv = 0, last_recv = 0;
+  uint64_t end = get_nanos(), start = get_nanos();
+//   uint8_t max_pending = BATCH_SIZE;
   while (1) {
     num = flextcp_context_poll(ctx, MAX_EVENTS, evs);
     for (int i = 0;i < num; i++) {
@@ -112,6 +125,13 @@ int main(int argc, char *argv[])
       switch (ev->event_type) {
         case FLEXTCP_EV_CONN_RECEIVED:
           int len = ev->ev.conn_received.len;
+          rx_bump += len;
+          //   total_recv += len;
+          //   if (total_recv - last_recv >= MSG_SIZE) {
+          //     last_recv = total_recv;
+          //     max_pending++;
+          //   }
+          //   assert (max_pending <= BATCH_SIZE);
           if (flextcp_connection_rx_done(ctx, conn, len) != 0) {
             fprintf(stderr, "flextcp_connection_rx_done(%p, %d) failed\n", conn,
                 len);
@@ -120,6 +140,10 @@ int main(int argc, char *argv[])
           break;
 
         case FLEXTCP_EV_CONN_SENDBUF:
+        //   sent_bytes = send_tcp_message(ctx, conn);
+        //   if (sent_bytes > 0) {
+        //     tx_bump += sent_bytes;
+        //   }
           break;
 
         default:
@@ -128,28 +152,38 @@ int main(int argc, char *argv[])
       }
     }
 
-    // send a message
-    ret = flextcp_connection_tx_alloc(conn, 64, &buf);
-    if (ret < 0) {
-        fprintf(stderr, "flextcp_connection_tx_alloc failed\n");
-        exit(-1);
+    end = get_nanos();
+    if (end - start > 1000000000) {
+      printf("tx tput= %f Gbps; rx tput= %f Gbps\n", tx_bump*8.0/(end - start),
+            rx_bump*8.0/(end - start));
+      start = get_nanos();
+      rx_bump = 0;
+      tx_bump = 0;
     }
 
-    if (ret < 64) {
-        continue;
+    // send batch of messages
+    // for (int bi = 0; bi < max_pending; bi++) {
+    // while (max_pending > 0) {
+    //     sent_bytes = send_tcp_message(ctx, conn);
+    //     if (sent_bytes == 0) {
+    //         break;
+    //     }
+    //     tx_bump += sent_bytes;
+    //     max_pending--;
+    // }
+
+    // for (int bi = 0; bi < BATCH_SIZE; bi++) {
+    //     sent_bytes = send_tcp_message(ctx, conn);
+    //     if (sent_bytes == 0) {
+    //         break;
+    //     }
+    //     tx_bump += sent_bytes;
+    // }
+    sent_bytes = send_tcp_message(ctx, conn);
+    if (sent_bytes > 0) {
+        tx_bump += sent_bytes;
     }
 
-    if (ret == 64) {
-        memset(buf, 1, ret);
-    } else {
-        printf("I couldn't allocate\n");
-    }
-
-    if (flextcp_connection_tx_send(ctx, conn, ret) != 0) {\
-        fprintf(stderr, "flextcp_connection_tx_send failed\n");
-    } else {
-        // printf("sent %d\n", ret);
-    }
   }
 
   return 0;

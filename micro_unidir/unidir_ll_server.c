@@ -1,27 +1,3 @@
-/*
- * Copyright 2019 University of Washington, Max Planck Institute for
- * Software Systems, and The University of Texas at Austin
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sublicense, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -33,9 +9,7 @@
 #include <assert.h>
 
 #include "../common/microbench.h"
-#include "unidir.h"
-
-#define MAX_EVENTS 32
+#include "unidir_ll_simple.h"
 
 static inline uint64_t get_nanos(void)
 {
@@ -44,9 +18,35 @@ static inline uint64_t get_nanos(void)
     return (uint64_t) ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
 }
 
+uint64_t send_tcp_message(struct flextcp_context* ctx, struct flextcp_connection *conn) {
+    void *buf;
+    uint64_t ret;
+
+    ret = flextcp_connection_tx_alloc(conn, MSG_SIZE, &buf);
+    if (ret < 0) {
+        fprintf(stderr, "flextcp_connection_tx_alloc failed\n");
+        exit(-1);
+    }
+
+    if (ret > 0) {
+        memset(buf, 1, ret);
+    } else {
+        return 0;
+    }
+
+    if (flextcp_connection_tx_send(ctx, conn, ret) != 0) {
+        fprintf(stderr, "flextcp_connection_tx_send failed\n");
+        exit(-1);
+    } else {
+        return ret;
+    }
+}
+
 int main(int argc, char *argv[])
 {
 
+  // uint64_t total_recv = 0;
+  // uint64_t last_recv = 0;
 
   struct flextcp_context *ctx = malloc(sizeof(*ctx));
   struct flextcp_connection *conn = malloc(sizeof(*conn));
@@ -136,23 +136,26 @@ int main(int argc, char *argv[])
         case FLEXTCP_EV_CONN_RECEIVED:
           // printf("Received data\n");
           uint32_t len = evs[i].ev.conn_received.len;
+
+          // total_recv += len;
+
+          // if (total_recv - last_recv >= MSG_SIZE) {
+          //   send_tcp_message(ctx, conn);
+          //   last_recv = total_recv;
+          // }
+
           if (flextcp_connection_rx_done(ctx, conn, len) != 0) {
 	          fprintf(stderr, "thread_event_rx: rx_done failed\n");
 	          abort();
 	        }
+
           break;
         default:
           printf("Unknown event type\n");
           break;
       }
     }
-
-
   }
-
-
-
-
 
   return 0;
 }
