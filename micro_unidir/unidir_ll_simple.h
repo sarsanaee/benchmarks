@@ -6,7 +6,7 @@
 
 #define MAX_EVENTS 32
 #define BATCH_SIZE 8
-#define MSG_SIZE 64
+#define MSG_SIZE 1024 // 1KB
 
 struct params {
   uint32_t conns;
@@ -17,82 +17,28 @@ struct params {
   uint32_t op_delay;
   int tx;
   uint16_t port;
+  uint8_t response;
 };
 
 static inline int parse_params(int argc, char *argv[], struct params *p)
 {
-  static const char *short_opts = "i:p:t:c:b:d:o:r";
+  // static const char *short_opts = "i:p:t:c:b:d:o:r";
+  static const char *short_opts = "r";
   int c, done = 0;
-  char *end;
+  // char *end;
 
-  p->conns = 1;
-  p->bytes = 1;
-  p->ip = 0;
-  p->threads = 1;
-  p->tx = 1;
-  p->port = 1234;
-  p->tx_delay = 0;
+  p->response = 0;
+  p->tx = 0;
+
 
   while (!done) {
     c = getopt(argc, argv, short_opts);
     switch (c) {
-      case 'i':
-        if ((p->ip = inet_addr(optarg)) == INADDR_NONE) {
-          fprintf(stderr, "parsing IP failed\n");
-          return -1;
-        }
-        break;
-
-      case 'p':
-        p->port = strtoul(optarg, &end, 10);
-        if (!*optarg || *end || p->port < 1) {
-          fprintf(stderr, "port needs to be a positive integer\n");
-          return -1;
-        }
-        break;
-
-      case 't':
-        p->threads = strtoul(optarg, &end, 10);
-        if (!*optarg || *end || p->threads < 1) {
-          fprintf(stderr, "threads needs to be a positive integer\n");
-          return -1;
-        }
-        break;
-
-      case 'c':
-        p->conns = strtoul(optarg, &end, 10);
-        if (!*optarg || *end || p->conns < 1) {
-          fprintf(stderr, "conns needs to be a positive integer\n");
-          return -1;
-        }
-        break;
-
-      case 'b':
-        p->bytes = strtoul(optarg, &end, 10);
-        if (!*optarg || *end || p->bytes < 1) {
-          fprintf(stderr, "bytes needs to be a positive integer\n");
-          return -1;
-        }
-        break;
-
-      case 'd':
-        p->tx_delay = strtoul(optarg, &end, 10);
-        if (!*optarg || *end) {
-          fprintf(stderr, "bytes needs to be an integer\n");
-          return -1;
-        }
-        break;
-
-      case 'o':
-        p->op_delay = strtoul(optarg, &end, 10);
-        if (!*optarg || *end) {
-          fprintf(stderr, "op delay needs to be an integer\n");
-          return -1;
-        }
-        break;
-
       case 'r':
-        p->tx = 0;
+        p->response = 1;
+        break;
+      case 'o':
+        p->tx = 1;
         break;
 
       case -1:
