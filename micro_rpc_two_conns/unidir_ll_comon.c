@@ -9,8 +9,8 @@
 #include <assert.h>
 #include <stdatomic.h>
 
-#define MSG_SIZE 2048
-#define BATCH_SIZE 8
+#define MSG_SIZE 64
+#define BATCH_SIZE 1
 
 #include "unidir_ll_simple.h"
 
@@ -269,7 +269,7 @@ int client(struct context *thread_ctx)
     else if (thread_ctx->params->client_of_server) {
       // I just need to see my server has received anything or not.
       __sync_synchronize();
-      if (remaining_bytes > MSG_SIZE){
+      if (remaining_bytes >= MSG_SIZE){
         sent_bytes = send_tcp_message(ctx, conn);
         tx_bump += sent_bytes;
         total_sent += sent_bytes;
