@@ -1,5 +1,4 @@
 
-// add propper header define for avoid multiple inclusion
 #ifndef UNIDIR_LL_SIMPLE_H
 #define UNIDIR_LL_SIMPLE_H
 
@@ -10,9 +9,9 @@
 
 #define MAX_EVENTS 32
 
-// #define HIST_START_US 0
-// #define HIST_BUCKET_US 1
-// #define HIST_BUCKETS (256 * 1024)
+#define HIST_START_US 0
+#define HIST_BUCKET_US 1
+#define HIST_BUCKETS (256 * 1024)
 
 struct params {
   uint8_t client;

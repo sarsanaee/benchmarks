@@ -9,57 +9,57 @@
 #include <assert.h>
 #include <stdatomic.h>
 
+#include "unidir_ll_simple.h"
+
+
 #define MSG_SIZE 64
 #define BATCH_SIZE 1
-
-#include "unidir_ll_simple.h"
 
 uint32_t max_pending = 0;
 uint64_t remaining_bytes = 0;
 uint64_t start_experiment = 0;
 
-// uint64_t sent_lat = 0;
-// uint64_t recv_lat = 0;
+uint64_t sent_lat = 0;
+uint64_t recv_lat = 0;
 
 // histogram
-// uint32_t *hist;
-// double fracs[6] = { 0.5, 0.9, 0.95, 0.99, 0.999, 0.9999 };
-// size_t fracs_pos[sizeof(fracs) / sizeof(fracs[0])];
+uint32_t *hist;
+double fracs[6] = { 0.5, 0.9, 0.95, 0.99, 0.999, 0.9999 };
+size_t fracs_pos[sizeof(fracs) / sizeof(fracs[0])];
 
+static inline void hist_fract_buckets(uint32_t *hist, uint64_t total,
+        double *fracs, size_t *idxs, size_t num)
+{
+    size_t i, j;
+    uint64_t sum = 0, goals[num];
+    for (j = 0; j < num; j++) {
+        goals[j] = total * fracs[j];
+    }
+    for (i = 0, j = 0; i < HIST_BUCKETS && j < num; i++) {
+        sum += hist[i];
+        for (; j < num && sum >= goals[j]; j++) {
+            idxs[j] = i;
+        }
+    }
+}
 
-// static inline void hist_fract_buckets(uint32_t *hist, uint64_t total,
-//         double *fracs, size_t *idxs, size_t num)
-// {
-//     size_t i, j;
-//     uint64_t sum = 0, goals[num];
-//     for (j = 0; j < num; j++) {
-//         goals[j] = total * fracs[j];
-//     }
-//     for (i = 0, j = 0; i < HIST_BUCKETS && j < num; i++) {
-//         sum += hist[i];
-//         for (; j < num && sum >= goals[j]; j++) {
-//             idxs[j] = i;
-//         }
-//     }
-// }
+static inline void record_latency(uint64_t nanos)
+{
+    size_t bucket = ((nanos / 1000) - HIST_START_US) / HIST_BUCKET_US;
+    if (bucket >= HIST_BUCKETS) {
+        bucket = HIST_BUCKETS - 1;
+    }
+    __sync_fetch_and_add(&hist[bucket], 1);
+}
 
-// static inline void record_latency(uint64_t nanos)
-// {
-//     size_t bucket = ((nanos / 1000) - HIST_START_US) / HIST_BUCKET_US;
-//     if (bucket >= HIST_BUCKETS) {
-//         bucket = HIST_BUCKETS - 1;
-//     }
-//     __sync_fetch_and_add(&hist[bucket], 1);
-// }
+static inline int hist_value(size_t i)
+{
+    if (i == HIST_BUCKETS - 1) {
+        return -1;
+    }
 
-// static inline int hist_value(size_t i)
-// {
-//     if (i == HIST_BUCKETS - 1) {
-//         return -1;
-//     }
-
-//     return i * HIST_BUCKET_US + HIST_START_US;
-// }
+    return i * HIST_BUCKET_US + HIST_START_US;
+}
 
 static inline uint64_t get_nanos(void)
 {
@@ -121,12 +121,12 @@ int client(struct context *thread_ctx)
     exit(-1);
   }
 
-  // if (thread_ctx->params->client && !thread_ctx->params->client_of_server) {
-  //   if ((hist = calloc(HIST_BUCKETS, sizeof(*hist))) == NULL) {
-  //       fprintf(stderr, "allocating total histogram failed\n");
-  //       abort();
-  //   }
-  // }
+  if (thread_ctx->params->client && !thread_ctx->params->client_of_server) {
+    if ((hist = calloc(HIST_BUCKETS, sizeof(*hist))) == NULL) {
+        fprintf(stderr, "allocating total histogram failed\n");
+        abort();
+    }
+  }
 
   if (flextcp_connection_open(ctx, conn,
                               ntohl(inet_addr(thread_ctx->server_ip)),
@@ -223,21 +223,26 @@ int client(struct context *thread_ctx)
       rx_bump = 0;
       tx_bump = 0;
 
-      // uint32_t hx = 0, msg_total = 0;
-      // if (thread_ctx->params->client && !thread_ctx->params->client_of_server) {
-      //   for (j = 0; j < HIST_BUCKETS; j++) {
-      //     hx = hist[j];
-      //     msg_total += hx;
-      //     hist[j] += hx;
-      //   }
-      //   hist_fract_buckets(hist, msg_total, fracs, fracs_pos,
-      //           sizeof(fracs) / sizeof(fracs[0]));
-      //   printf("Client: histogram: ");
-      //   for (j = 0; j < sizeof(fracs) / sizeof(fracs[0]); j++) {
-      //     printf("%d=%d ",(int)fracs[j]*100, hist_value(fracs_pos[j]));
-      //   }
-      //   printf("\n");
-      // }
+      if (thread_ctx->params->client && !thread_ctx->params->client_of_server) {
+        uint32_t hx = 0, msg_total = 0;
+
+        for (j = 0; j < HIST_BUCKETS; j++) {
+          hx = hist[j];
+          msg_total += hx;
+          hist[j] += hx;
+        }
+        hist_fract_buckets(hist, msg_total, fracs, fracs_pos,
+                sizeof(fracs) / sizeof(fracs[0]));
+        printf(" 50p=%d us  90p=%d us  95p=%d us  "
+                "99p=%d us  99.9p=%d us  99.99p=%d us",
+                hist_value(fracs_pos[0]), hist_value(fracs_pos[1]),
+                hist_value(fracs_pos[2]), hist_value(fracs_pos[3]),
+                hist_value(fracs_pos[4]), hist_value(fracs_pos[5]));
+
+        printf("\n");
+
+        memset(hist, 0, sizeof(*hist) * HIST_BUCKETS);
+      }
     }
 
     // if (end - last_transmit < 100000)
@@ -259,7 +264,7 @@ int client(struct context *thread_ctx)
         total_sent += sent_bytes;
         if (sent_bytes > 0)
         {
-          // sent_lat = get_nanos();
+          sent_lat = get_nanos();
           assert(sent_bytes == MSG_SIZE);
           __sync_fetch_and_sub(&max_pending, 1);
 
@@ -413,11 +418,10 @@ int server(struct context *thread_ctx)
             rx_bump += MSG_SIZE;
             //create a spin lock around max pending
 
-            // if (!thread_ctx->params->client_of_server) {
-            //   total_messages++;
-            //   recv_lat = get_nanos();
-            //   record_latency(recv_lat - sent_lat);
-            // }
+            if (!thread_ctx->params->client_of_server) {
+              recv_lat = get_nanos();
+              record_latency(recv_lat - sent_lat);
+            }
 
             __sync_fetch_and_add(&max_pending, 1);
             __sync_fetch_and_add(&remaining_bytes, MSG_SIZE);
