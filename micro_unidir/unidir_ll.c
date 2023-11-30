@@ -30,11 +30,12 @@
 #include <unistd.h>
 #include <tas_ll.h>
 #include <utils.h>
+#include <assert.h>
 
 #include "../common/microbench.h"
 #include "unidir.h"
 
-#define BATCH_SIZE 32
+#define BATCH_SIZE 8
 #define MAX_PENDING 32
 
 struct connection {
@@ -99,6 +100,13 @@ static inline uint64_t touch(const void *buf, size_t len)
   return x;
 }
 
+static inline uint64_t get_nanos(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t) ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
+}
+
 static void *loop_receive(void *data)
 {
   struct context *ctx = data;
@@ -109,6 +117,7 @@ static void *loop_receive(void *data)
   size_t len;
   void *buf;
   uint64_t bytes_rx_bump;
+  uint64_t total_recv=0;
 
   ctx->conns_closed = params.conns;
 
@@ -168,6 +177,29 @@ static void *loop_receive(void *data)
                 len);
             exit(-1);
           }
+
+          total_recv += len;
+
+          if (total_recv % params.bytes == 0) {
+            uint8_t bytes_to_return = 64;
+
+            uint32_t ret = flextcp_connection_tx_alloc(&c->conn, bytes_to_return, &buf);
+
+            if (ret <= 0) {
+              fprintf(stderr, "flextcp_connection_tx_alloc failed\n");
+              exit(-1);
+            } else {
+              memset(buf, 1, ret);
+            }
+            uint64_t start = get_nanos();
+            if (flextcp_connection_tx_send(&ctx->ctx, &c->conn, bytes_to_return) != 0) {
+              assert(0==1);
+            }
+            uint64_t end = get_nanos();
+            if (end - start > 5000) {
+              printf("send time: %lu\n", end - start);
+            }
+          }
           break;
 
         default:
@@ -200,6 +232,10 @@ static void *loop_receive(void *data)
   }
 }
 
+
+
+
+
 static void ctx_tx_add(struct context *ctx, struct connection *c)
 {
   c->next_tx = NULL;
@@ -222,6 +258,8 @@ static void *loop_send(void *data)
   ssize_t ret;
   void *buf;
   uint64_t bytes_rx_bump, bytes_tx_bump;
+  uint8_t max_pending = BATCH_SIZE;
+  uint64_t total_recv=0;
 
   ctx->conns_closed = params.conns;
   ctx->tx_first = ctx->tx_last = NULL;
@@ -276,6 +314,16 @@ static void *loop_send(void *data)
           c = (struct connection *) ev->ev.conn_received.conn;
           len = ev->ev.conn_received.len;
           bytes_rx_bump += len;
+          total_recv += len;
+
+          // sending packets
+          if (total_recv % params.bytes == 0) {
+            max_pending++;
+            // printf("received\n");
+            ctx_tx_add(ctx, c);
+            // I have to return one byte.
+          }
+
           if (flextcp_connection_rx_done(&ctx->ctx, &c->conn, len) != 0) {
             fprintf(stderr, "flextcp_connection_rx_done(%p, %zu) failed\n", c,
                 len);
@@ -294,6 +342,9 @@ static void *loop_send(void *data)
       }
     }
 
+    // uint8_t to_send = max_pending < BATCH_SIZE? max_pending: BATCH_SIZE;
+
+    assert(max_pending <= BATCH_SIZE);
     /* transmit */
     for (c = ctx->tx_first, i = 0; c != NULL && i < BATCH_SIZE && start_tx;
         i++, c = ctx->tx_first)
@@ -303,32 +354,35 @@ static void *loop_send(void *data)
         ctx->tx_last = NULL;
       }
 
-      ret = flextcp_connection_tx_alloc(&c->conn, params.bytes, &buf);
-      if (ret < 0) {
-        fprintf(stderr, "flextcp_connection_tx_alloc failed\n");
-        exit(-1);
-      }
-      if (ret > 0) {
-        more_tx = 1;
-        memset(buf, 1, ret);
-      } else {
-        more_tx = 0;
-      }
-
-      c->allocated += ret;
-      if (c->allocated > 0) {
-        if (flextcp_connection_tx_send(&ctx->ctx, &c->conn, c->allocated) != 0) {
+      while (max_pending > 0) {
+        ret = flextcp_connection_tx_alloc(&c->conn, params.bytes, &buf);
+        if (ret < 0) {
+          fprintf(stderr, "flextcp_connection_tx_alloc failed\n");
+          exit(-1);
+        }
+        if (ret > 0) {
           more_tx = 1;
+          memset(buf, 1, ret);
         } else {
-          bytes_tx_bump += c->allocated;
-          ctx->conn_cnts[c->id] += c->allocated;
-          c->allocated = 0;
+          // more_tx = 0;
+        }
+
+        c->allocated += ret;
+        if (c->allocated > 0) {
+          if (flextcp_connection_tx_send(&ctx->ctx, &c->conn, c->allocated) != 0) {
+            // more_tx = 1;
+          } else {
+            bytes_tx_bump += c->allocated;
+            ctx->conn_cnts[c->id] += c->allocated;
+            c->allocated = 0;
+            max_pending--;
+            // printf("sent\n");
+          }
         }
       }
 
-      if (more_tx) {
-        ctx_tx_add(ctx, c);
-      }
+      assert(max_pending >= 0);
+
     }
 
     /* open more connections if necessary */
@@ -362,7 +416,7 @@ int main(int argc, char *argv[])
   struct connection *c;
   uint32_t n, i, j;
   uint64_t bytes, c_open, c_closed, *conn_cnts, conn_min, conn_max, conn_diff;
-  double jfi, jfi_sosq;
+  double jfi, jfi_sosq, tput;
   pthread_t thread;
   void *(*loop)(void *);
 
@@ -432,6 +486,8 @@ int main(int argc, char *argv[])
   }
   start_tx = 1;
 
+  uint64_t start = get_nanos();
+
   while (1) {
     sleep(1);
     bytes = c_open = c_closed = 0;
@@ -459,10 +515,14 @@ int main(int argc, char *argv[])
         jfi_sosq += (double) conn_diff * conn_diff;
       }
     }
+
+    tput = (double) bytes * 8 / (get_nanos() - start);
     printf("bytes=%"PRIu64" conns_open=%"PRIu64" conns_closed=%"PRIu64
         " conn_bytes_min=%"PRIu64" conn_bytes_max=%"PRIu64
-        " jain_fairness=%lf\n", bytes, c_open, c_closed, conn_min, conn_max,
-        jfi);
+        " jain_fairness=%lf, tput=%f Gbps\n", bytes, c_open, c_closed, conn_min, conn_max,
+        jfi, tput);
+
+    start = get_nanos();
 
     fflush(stdout);
   }

@@ -51,6 +51,22 @@ uint64_t send_tcp_message(struct flextcp_context *ctx, struct flextcp_connection
 {
   void *buf;
   uint64_t ret;
+  uint32_t available = 0;
+
+  ret = flextcp_conn_txbuf_available(conn);
+  if (ret < 0)
+  {
+    fprintf(stderr, "flextcp_connection_tx_alloc failed\n");
+    exit(-1);
+  }
+
+  available += ret;
+
+  if (available < MSG_SIZE)
+  {
+    // printf("allocated %lu bytes, %lu ret\n", allocated, ret);
+    return 0;
+  }
 
   ret = flextcp_connection_tx_alloc(conn, MSG_SIZE - allocated, &buf);
   if (ret < 0)
@@ -59,19 +75,10 @@ uint64_t send_tcp_message(struct flextcp_context *ctx, struct flextcp_connection
     exit(-1);
   }
 
+  assert (ret == MSG_SIZE);
   allocated += ret;
-
   memset(buf, 1, ret);
 
-  if (allocated < MSG_SIZE)
-  {
-    // printf("allocated %lu bytes, %lu ret\n", allocated, ret);
-    return 0;
-  }
-
-  assert(allocated == MSG_SIZE);
-
-  // sending should be separated.
   if (flextcp_connection_tx_send(ctx, conn, allocated) != 0)
   {
     fprintf(stderr, "flextcp_connection_tx_send failed\n");
@@ -84,6 +91,46 @@ uint64_t send_tcp_message(struct flextcp_context *ctx, struct flextcp_connection
     return ret;
   }
 }
+
+
+// uint64_t send_tcp_message(struct flextcp_context *ctx, struct flextcp_connection *conn)
+// {
+//   void *buf;
+//   uint64_t ret;
+
+//   flextcp_connection_tx_alloc(conn, MSG_SIZE - allocated, &buf);
+//   if (ret < 0)
+//   {
+//     fprintf(stderr, "flextcp_connection_conn_txbuf_available failed\n");
+//     exit(-1);
+//   }
+
+//   allocated += ret;
+
+//   memset(buf, 1, ret);
+
+//   if (allocated < MSG_SIZE)
+//   {
+//     // printf("allocated %lu bytes, %lu ret\n", allocated, ret);
+//     return 0;
+//   }
+
+//   assert(allocated == MSG_SIZE);
+
+//   // sending should be separated.
+//   if (flextcp_connection_tx_send(ctx, conn, allocated) != 0)
+//   {
+//     fprintf(stderr, "flextcp_connection_tx_send failed\n");
+//     exit(-1);
+//   }
+//   else
+//   {
+//     ret = allocated;
+//     allocated = 0;
+//     return ret;
+//   }
+// }
+
 
 int main(int argc, char *argv[])
 {
@@ -232,18 +279,15 @@ int main(int argc, char *argv[])
       case FLEXTCP_EV_CONN_SENDBUF:
         if (params.response)
         {
-          assert(1 == 0);
           while (remaining_bytes >= MSG_SIZE)
           {
-            printf("FLEXCONN_SENDBUF %lu\n", remaining_bytes);
+            // printf("FLEXCONN_SENDBUF %lu\n", remaining_bytes);
             uint32_t sent_bytes = send_tcp_message(ctx, conn);
             tx_bump += sent_bytes;
             total_sent += sent_bytes;
             remaining_bytes -= sent_bytes;
-            assert(sent_bytes == MSG_SIZE);
             if (sent_bytes == 0)
             {
-              printf("this should not fail %lu\n", remaining_bytes);
               break;
             }
           }
@@ -265,22 +309,22 @@ int main(int argc, char *argv[])
       tx_bump = 0;
     }
 
-    if (params.response)
-    {
-      while (remaining_bytes >= MSG_SIZE)
-      {
-        assert(1 == 12);
-        uint32_t sent_bytes = send_tcp_message(ctx, conn);
-        tx_bump += sent_bytes;
-        remaining_bytes -= sent_bytes;
-        assert(sent_bytes == MSG_SIZE);
-        if (sent_bytes == 0)
-        {
-          printf("this should not fail %lu\n", remaining_bytes);
-          break;
-        }
-      }
-    }
+    // if (params.response)
+    // {
+    //   while (remaining_bytes >= MSG_SIZE)
+    //   {
+    //     // assert(1 == 12);
+    //     uint32_t sent_bytes = send_tcp_message(ctx, conn);
+    //     tx_bump += sent_bytes;
+    //     remaining_bytes -= sent_bytes;
+    //     if (sent_bytes == 0)
+    //     {
+    //       // printf("this should not fail %lu\n", remaining_bytes);
+    //       break;
+    //     }
+
+    //   }
+    // }
   }
 
   return 0;

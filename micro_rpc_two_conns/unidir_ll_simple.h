@@ -1,39 +1,48 @@
+
+// add propper header define for avoid multiple inclusion
+#ifndef UNIDIR_LL_SIMPLE_H
+#define UNIDIR_LL_SIMPLE_H
+
 #include <stdio.h>
 #include <unistd.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-
 #define MAX_EVENTS 32
 #define BATCH_SIZE 8
-#define MSG_SIZE 64 // 1KB
+#define MSG_SIZE 2048 // 1KB
 
 struct params {
-  uint32_t conns;
-  uint32_t bytes;
-  uint32_t ip;
-  uint32_t threads;
-  uint32_t tx_delay;
-  uint32_t op_delay;
-  int tx;
-  uint16_t port;
+  uint8_t client;
+  uint8_t server;
   uint8_t response;
 };
 
+struct context {
+  char *server_ip;
+  uint16_t server_port;
+  uint16_t client_port;
+  struct params *params;
+};
 
-int client();
-int server();
+int client(struct context *);
+int server(struct context *);
 
 static inline int parse_params(int argc, char *argv[], struct params *p)
 {
   // static const char *short_opts = "i:p:t:c:b:d:o:r";
-  static const char *short_opts = "r";
+  static const char *short_opts = "r:c:s";
   int c, done = 0;
   // char *end;
 
   p->response = 0;
-  p->tx = 0;
+  p->client = 0;
+  p->server = 0;
 
+  if (argc < 2 || argc > 7) {
+      fprintf(stderr, "Usage: ./unidir_ll_server -c [1|0] -s [1|0] -r [1|0]\n");
+      return EXIT_FAILURE;
+  }
 
   while (!done) {
     c = getopt(argc, argv, short_opts);
@@ -41,8 +50,11 @@ static inline int parse_params(int argc, char *argv[], struct params *p)
       case 'r':
         p->response = 1;
         break;
-      case 'o':
-        p->tx = 1;
+      case 'c':
+        p->client = 1;
+        break;
+      case 's':
+        p->server = 1;
         break;
 
       case -1:
@@ -56,6 +68,12 @@ static inline int parse_params(int argc, char *argv[], struct params *p)
         abort();
     }
   }
+
+  if (p->client && p->server) {
+    fprintf(stderr, "Cannot be both client and server\n");
+    goto failed;
+  }
+
   return 0;
 
 failed:
@@ -74,3 +92,4 @@ failed:
   return -1;
 }
 
+#endif // UNIDIR_LL_SIMPLE_H

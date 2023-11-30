@@ -22,13 +22,26 @@ static inline uint64_t get_nanos(void)
   return (uint64_t)ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
 }
 
-// how about creating a new function for preparing buffers? // TODO: ALireza
-
 uint64_t send_tcp_message(struct flextcp_context *ctx, struct flextcp_connection *conn)
 {
   void *buf;
   uint64_t ret;
-  uint32_t sent;
+  uint32_t available = 0;
+
+  ret = flextcp_conn_txbuf_available(conn);
+  if (ret < 0)
+  {
+    fprintf(stderr, "flextcp_connection_tx_alloc failed\n");
+    exit(-1);
+  }
+
+  available += ret;
+
+  if (available < MSG_SIZE)
+  {
+    // printf("allocated %lu bytes, %lu ret\n", allocated, ret);
+    return 0;
+  }
 
   ret = flextcp_connection_tx_alloc(conn, MSG_SIZE - allocated, &buf);
   if (ret < 0)
@@ -37,21 +50,11 @@ uint64_t send_tcp_message(struct flextcp_context *ctx, struct flextcp_connection
     exit(-1);
   }
 
+  assert (ret == MSG_SIZE);
   allocated += ret;
-
   memset(buf, 1, ret);
 
-  if (allocated < MSG_SIZE)
-  {
-    // printf("allocated %lu bytes, %lu ret\n", allocated, ret);
-    return 0;
-  }
-
-  assert(allocated == MSG_SIZE);
-
-  // sending should be separated.
-  sent = flextcp_connection_tx_send(ctx, conn, allocated);
-  if (sent != 0)
+  if (flextcp_connection_tx_send(ctx, conn, allocated) != 0)
   {
     fprintf(stderr, "flextcp_connection_tx_send failed\n");
     exit(-1);
@@ -63,6 +66,46 @@ uint64_t send_tcp_message(struct flextcp_context *ctx, struct flextcp_connection
     return ret;
   }
 }
+
+// uint64_t send_tcp_message(struct flextcp_context *ctx, struct flextcp_connection *conn)
+// {
+//   void *buf;
+//   uint64_t ret;
+//   uint32_t sent;
+
+//   ret = flextcp_connection_tx_alloc(conn, MSG_SIZE - allocated, &buf);
+//   if (ret < 0)
+//   {
+//     fprintf(stderr, "flextcp_connection_tx_alloc failed\n");
+//     exit(-1);
+//   }
+
+//   allocated += ret;
+
+//   memset(buf, 1, ret);
+
+//   if (allocated < MSG_SIZE)
+//   {
+//     // printf("allocated %lu bytes, %lu ret\n", allocated, ret);
+//     return 0;
+//   }
+
+//   assert(allocated == MSG_SIZE);
+
+//   // sending should be separated.
+//   sent = flextcp_connection_tx_send(ctx, conn, allocated);
+//   if (sent != 0)
+//   {
+//     fprintf(stderr, "flextcp_connection_tx_send failed\n");
+//     exit(-1);
+//   }
+//   else
+//   {
+//     ret = allocated;
+//     allocated = 0;
+//     return ret;
+//   }
+// }
 
 int main(int argc, char *argv[])
 {
@@ -143,6 +186,9 @@ int main(int argc, char *argv[])
   uint64_t total_sent = 0;
   uint64_t end = get_nanos(), start = get_nanos();
   uint8_t max_pending = BATCH_SIZE;
+  uint32_t outstanding_bytes = 0;
+  uint64_t last_transmit = 0;
+  int len = 0;
   while (1)
   {
     num = flextcp_context_poll(ctx, MAX_EVENTS, evs);
@@ -152,7 +198,7 @@ int main(int argc, char *argv[])
       switch (ev->event_type)
       {
       case FLEXTCP_EV_CONN_RECEIVED:
-        int len = ev->ev.conn_received.len;
+        len = len + ev->ev.conn_received.len;
         total_recv += len;
 
         if (!params.response)
@@ -178,6 +224,7 @@ int main(int argc, char *argv[])
             rx_bump += MSG_SIZE;
             max_pending += 1;
           }
+
         }
         break;
 
@@ -205,6 +252,11 @@ int main(int argc, char *argv[])
       tx_bump = 0;
     }
 
+    if (end - last_transmit < 1000000000)
+      continue;
+
+    last_transmit = end;
+
     if (params.response)
     {
       while (max_pending > 0)
@@ -216,7 +268,7 @@ int main(int argc, char *argv[])
         if (sent_bytes > 0)
         {
           assert(sent_bytes == MSG_SIZE);
-          max_pending = max_pending - 1;
+          max_pending--;
         }
       }
     }
