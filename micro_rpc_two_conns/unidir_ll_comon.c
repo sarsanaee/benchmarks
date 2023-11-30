@@ -9,15 +9,57 @@
 #include <assert.h>
 #include <stdatomic.h>
 
-
-atomic_flag spinlock = ATOMIC_FLAG_INIT;
+#define MSG_SIZE 2048
+#define BATCH_SIZE 8
 
 #include "unidir_ll_simple.h"
 
 uint32_t max_pending = 0;
-uint64_t allocated = 0;
 uint64_t remaining_bytes = 0;
 uint64_t start_experiment = 0;
+
+// uint64_t sent_lat = 0;
+// uint64_t recv_lat = 0;
+
+// histogram
+// uint32_t *hist;
+// double fracs[6] = { 0.5, 0.9, 0.95, 0.99, 0.999, 0.9999 };
+// size_t fracs_pos[sizeof(fracs) / sizeof(fracs[0])];
+
+
+// static inline void hist_fract_buckets(uint32_t *hist, uint64_t total,
+//         double *fracs, size_t *idxs, size_t num)
+// {
+//     size_t i, j;
+//     uint64_t sum = 0, goals[num];
+//     for (j = 0; j < num; j++) {
+//         goals[j] = total * fracs[j];
+//     }
+//     for (i = 0, j = 0; i < HIST_BUCKETS && j < num; i++) {
+//         sum += hist[i];
+//         for (; j < num && sum >= goals[j]; j++) {
+//             idxs[j] = i;
+//         }
+//     }
+// }
+
+// static inline void record_latency(uint64_t nanos)
+// {
+//     size_t bucket = ((nanos / 1000) - HIST_START_US) / HIST_BUCKET_US;
+//     if (bucket >= HIST_BUCKETS) {
+//         bucket = HIST_BUCKETS - 1;
+//     }
+//     __sync_fetch_and_add(&hist[bucket], 1);
+// }
+
+// static inline int hist_value(size_t i)
+// {
+//     if (i == HIST_BUCKETS - 1) {
+//         return -1;
+//     }
+
+//     return i * HIST_BUCKET_US + HIST_START_US;
+// }
 
 static inline uint64_t get_nanos(void)
 {
@@ -26,7 +68,7 @@ static inline uint64_t get_nanos(void)
   return (uint64_t)ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
 }
 
-uint64_t send_tcp_message(struct flextcp_context *ctx, struct       flextcp_connection *conn)
+uint64_t send_tcp_message(struct flextcp_context *ctx, struct flextcp_connection *conn)
 {
   void *buf;
   uint64_t ret;
@@ -43,11 +85,10 @@ uint64_t send_tcp_message(struct flextcp_context *ctx, struct       flextcp_conn
 
   if (available < MSG_SIZE)
   {
-    // printf("allocated %lu bytes, %lu ret\n", allocated, ret);
     return 0;
   }
 
-  ret = flextcp_connection_tx_alloc(conn, MSG_SIZE - allocated, &buf);
+  ret = flextcp_connection_tx_alloc(conn, MSG_SIZE, &buf);
   if (ret < 0)
   {
     fprintf(stderr, "flextcp_connection_tx_alloc failed\n");
@@ -55,18 +96,15 @@ uint64_t send_tcp_message(struct flextcp_context *ctx, struct       flextcp_conn
   }
 
   assert(ret == MSG_SIZE);
-  allocated += ret;
   memset(buf, 1, ret);
 
-  if (flextcp_connection_tx_send(ctx, conn, allocated) != 0)
+  if (flextcp_connection_tx_send(ctx, conn, ret) != 0)
   {
     fprintf(stderr, "flextcp_connection_tx_send failed\n");
     exit(-1);
   }
   else
   {
-    ret = allocated;
-    allocated = 0;
     return ret;
   }
 }
@@ -82,6 +120,13 @@ int client(struct context *thread_ctx)
     fprintf(stderr, "flextcp_context_create failed\n");
     exit(-1);
   }
+
+  // if (thread_ctx->params->client && !thread_ctx->params->client_of_server) {
+  //   if ((hist = calloc(HIST_BUCKETS, sizeof(*hist))) == NULL) {
+  //       fprintf(stderr, "allocating total histogram failed\n");
+  //       abort();
+  //   }
+  // }
 
   if (flextcp_connection_open(ctx, conn,
                               ntohl(inet_addr(thread_ctx->server_ip)),
@@ -177,6 +222,22 @@ int client(struct context *thread_ctx)
       start = get_nanos();
       rx_bump = 0;
       tx_bump = 0;
+
+      // uint32_t hx = 0, msg_total = 0;
+      // if (thread_ctx->params->client && !thread_ctx->params->client_of_server) {
+      //   for (j = 0; j < HIST_BUCKETS; j++) {
+      //     hx = hist[j];
+      //     msg_total += hx;
+      //     hist[j] += hx;
+      //   }
+      //   hist_fract_buckets(hist, msg_total, fracs, fracs_pos,
+      //           sizeof(fracs) / sizeof(fracs[0]));
+      //   printf("Client: histogram: ");
+      //   for (j = 0; j < sizeof(fracs) / sizeof(fracs[0]); j++) {
+      //     printf("%d=%d ",(int)fracs[j]*100, hist_value(fracs_pos[j]));
+      //   }
+      //   printf("\n");
+      // }
     }
 
     // if (end - last_transmit < 100000)
@@ -187,7 +248,7 @@ int client(struct context *thread_ctx)
     if (start_experiment != 1)
       continue;
 
-    if (thread_ctx->params->response)
+    if (thread_ctx->params->response && !thread_ctx->params->client_of_server)
     {
       __sync_synchronize();
       while (max_pending > 0)
@@ -198,19 +259,26 @@ int client(struct context *thread_ctx)
         total_sent += sent_bytes;
         if (sent_bytes > 0)
         {
+          // sent_lat = get_nanos();
           assert(sent_bytes == MSG_SIZE);
-          // while (atomic_flag_test_and_set(&spinlock)) {
-          //   // Spin (do nothing) while the lock is held
-          // }
-          // max_pending = max_pending - 1;
           __sync_fetch_and_sub(&max_pending, 1);
 
-          // atomic_flag_clear(&spinlock);
         }
+      }
+    }
+    else if (thread_ctx->params->client_of_server) {
+      // I just need to see my server has received anything or not.
+      __sync_synchronize();
+      if (remaining_bytes > MSG_SIZE){
+        sent_bytes = send_tcp_message(ctx, conn);
+        tx_bump += sent_bytes;
+        total_sent += sent_bytes;
+        __sync_fetch_and_sub(&remaining_bytes, sent_bytes);
       }
     }
     else
     {
+      // this is client for actual Client Machine.
       sent_bytes = send_tcp_message(ctx, conn);
       tx_bump += sent_bytes;
       total_sent += sent_bytes;
@@ -318,21 +386,22 @@ int server(struct context *thread_ctx)
         start_experiment = 1;
         break;
       case FLEXTCP_EV_CONN_RECEIVED:
-        len = len + evs[i].ev.conn_received.len;
-        total_recv += len;
-
         if (!thread_ctx->params->response)
         {
+          len = evs[i].ev.conn_received.len;
+          total_recv += len;
+          __sync_fetch_and_add(&remaining_bytes, len);
+          rx_bump += len;
+
           if (flextcp_connection_rx_done(ctx, conn, len) != 0)
           {
             fprintf(stderr, "thread_event_rx: rx_done failed\n");
             abort();
           }
-          total_recv += len;
-          rx_bump += len;
         }
-        else
-        {
+        else {
+          len = len + evs[i].ev.conn_received.len;
+          total_recv += len;
           while (len >= MSG_SIZE)
           {
             if (flextcp_connection_rx_done(ctx, conn, MSG_SIZE) != 0)
@@ -343,7 +412,15 @@ int server(struct context *thread_ctx)
             len -= MSG_SIZE;
             rx_bump += MSG_SIZE;
             //create a spin lock around max pending
+
+            // if (!thread_ctx->params->client_of_server) {
+            //   total_messages++;
+            //   recv_lat = get_nanos();
+            //   record_latency(recv_lat - sent_lat);
+            // }
+
             __sync_fetch_and_add(&max_pending, 1);
+            __sync_fetch_and_add(&remaining_bytes, MSG_SIZE);
           }
         }
 

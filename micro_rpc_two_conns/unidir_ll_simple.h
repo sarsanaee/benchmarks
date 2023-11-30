@@ -9,13 +9,16 @@
 #include <arpa/inet.h>
 
 #define MAX_EVENTS 32
-#define BATCH_SIZE 8
-#define MSG_SIZE 2048 // 1KB
+
+// #define HIST_START_US 0
+// #define HIST_BUCKET_US 1
+// #define HIST_BUCKETS (256 * 1024)
 
 struct params {
   uint8_t client;
   uint8_t server;
   uint8_t response;
+  uint8_t client_of_server;
 };
 
 struct context {
@@ -38,6 +41,7 @@ static inline int parse_params(int argc, char *argv[], struct params *p)
   p->response = 0;
   p->client = 0;
   p->server = 0;
+  p->client_of_server = 0;
 
   if (argc < 2 || argc > 7) {
       fprintf(stderr, "Usage: ./unidir_ll_server -c [1|0] -s [1|0] -r [1|0]\n");
@@ -55,6 +59,7 @@ static inline int parse_params(int argc, char *argv[], struct params *p)
         break;
       case 's':
         p->server = 1;
+        p->client_of_server = 1;
         break;
 
       case -1:
