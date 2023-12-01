@@ -12,8 +12,10 @@
 #include "unidir_ll_simple.h"
 
 
-#define MSG_SIZE 64
-#define BATCH_SIZE 1
+#define MSG_SIZE 8192
+#define CLIENT_MSG_SIZE MSG_SIZE // This what TX threads of client sends and RX thread of server should consume.
+#define SERVER_SEND_MSG_SIZE 64 // This what TX thread of server sends and RX thread of client should consume.
+#define BATCH_SIZE 8
 
 uint32_t max_pending = 0;
 uint64_t remaining_bytes = 0;
@@ -68,7 +70,7 @@ static inline uint64_t get_nanos(void)
   return (uint64_t)ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
 }
 
-uint64_t send_tcp_message(struct flextcp_context *ctx, struct flextcp_connection *conn)
+uint64_t send_tcp_message(struct flextcp_context *ctx, struct flextcp_connection *conn, uint32_t msg_size)
 {
   void *buf;
   uint64_t ret;
@@ -83,19 +85,19 @@ uint64_t send_tcp_message(struct flextcp_context *ctx, struct flextcp_connection
 
   available += ret;
 
-  if (available < MSG_SIZE)
+  if (available < msg_size)
   {
     return 0;
   }
 
-  ret = flextcp_connection_tx_alloc(conn, MSG_SIZE, &buf);
+  ret = flextcp_connection_tx_alloc(conn, msg_size, &buf);
   if (ret < 0)
   {
     fprintf(stderr, "flextcp_connection_tx_alloc failed\n");
     exit(-1);
   }
 
-  assert(ret == MSG_SIZE);
+  assert(ret == msg_size);
   memset(buf, 1, ret);
 
   if (flextcp_connection_tx_send(ctx, conn, ret) != 0)
@@ -259,13 +261,13 @@ int client(struct context *thread_ctx)
       while (max_pending > 0)
       {
         // printf("max_pending: %d\n", max_pending);
-        sent_bytes = send_tcp_message(ctx, conn);
+        sent_bytes = send_tcp_message(ctx, conn, CLIENT_MSG_SIZE);
         tx_bump += sent_bytes;
         total_sent += sent_bytes;
         if (sent_bytes > 0)
         {
           sent_lat = get_nanos();
-          assert(sent_bytes == MSG_SIZE);
+          assert(sent_bytes == CLIENT_MSG_SIZE);
           __sync_fetch_and_sub(&max_pending, 1);
 
         }
@@ -274,8 +276,8 @@ int client(struct context *thread_ctx)
     else if (thread_ctx->params->client_of_server) {
       // I just need to see my server has received anything or not.
       __sync_synchronize();
-      if (remaining_bytes >= MSG_SIZE){
-        sent_bytes = send_tcp_message(ctx, conn);
+      if (remaining_bytes >= SERVER_SEND_MSG_SIZE){
+        sent_bytes = send_tcp_message(ctx, conn, SERVER_SEND_MSG_SIZE);
         tx_bump += sent_bytes;
         total_sent += sent_bytes;
         __sync_fetch_and_sub(&remaining_bytes, sent_bytes);
@@ -284,7 +286,7 @@ int client(struct context *thread_ctx)
     else
     {
       // this is client for actual Client Machine.
-      sent_bytes = send_tcp_message(ctx, conn);
+      sent_bytes = send_tcp_message(ctx, conn, CLIENT_MSG_SIZE);
       tx_bump += sent_bytes;
       total_sent += sent_bytes;
     }
@@ -390,21 +392,53 @@ int server(struct context *thread_ctx)
         printf("Connection accepted\n");
         start_experiment = 1;
         break;
-      case FLEXTCP_EV_CONN_RECEIVED:
-        if (!thread_ctx->params->response)
-        {
-          len = evs[i].ev.conn_received.len;
-          total_recv += len;
-          __sync_fetch_and_add(&remaining_bytes, len);
-          rx_bump += len;
+      // case FLEXTCP_EV_CONN_RECEIVED:
+      //   if (!thread_ctx->params->response)
+      //   {
+      //     len = evs[i].ev.conn_received.len;
+      //     total_recv += len;
+      //     __sync_fetch_and_add(&remaining_bytes, len);
+      //     rx_bump += len;
 
-          if (flextcp_connection_rx_done(ctx, conn, len) != 0)
-          {
-            fprintf(stderr, "thread_event_rx: rx_done failed\n");
+      //     if (flextcp_connection_rx_done(ctx, conn, len) != 0)
+      //     {
+      //       fprintf(stderr, "thread_event_rx: rx_done failed\n");
+      //       abort();
+      //     }
+      //   }
+      //   else {
+      //     len = len + evs[i].ev.conn_received.len;
+      //     total_recv += len;
+      //     while (len >= MSG_SIZE)
+      //     {
+      //       if (flextcp_connection_rx_done(ctx, conn, MSG_SIZE) != 0)
+      //       {
+      //         fprintf(stderr, "thread_event_rx: rx_done failed\n");
+      //         abort();
+      //       }
+      //       len -= MSG_SIZE;
+      //       rx_bump += MSG_SIZE;
+      //       //create a spin lock around max pending
+
+      //       if (!thread_ctx->params->client_of_server) {
+      //         recv_lat = get_nanos();
+      //         record_latency(recv_lat - sent_lat);
+      //       }
+
+      //       __sync_fetch_and_add(&max_pending, 1);
+      //       __sync_fetch_and_add(&remaining_bytes, MSG_SIZE);
+      //     }
+      //   }
+
+      //   break;
+
+      case FLEXTCP_EV_CONN_RECEIVED:
+        if (thread_ctx->params->server) {
+          if (!thread_ctx->params->response) {
+            printf("parameter issue\n");
             abort();
           }
-        }
-        else {
+          // rest of the code
           len = len + evs[i].ev.conn_received.len;
           total_recv += len;
           while (len >= MSG_SIZE)
@@ -424,11 +458,88 @@ int server(struct context *thread_ctx)
             }
 
             __sync_fetch_and_add(&max_pending, 1);
-            __sync_fetch_and_add(&remaining_bytes, MSG_SIZE);
+            // we should update remaining bytes based on smaller messages.
+            __sync_fetch_and_add(&remaining_bytes, SERVER_SEND_MSG_SIZE);
           }
         }
 
+        else if (thread_ctx->params->client) {
+          if (!thread_ctx->params->response) {
+            printf("parameter issue\n");
+            abort();
+          } else {
+          // rest of the code
+            len = len + evs[i].ev.conn_received.len;
+            total_recv += len;
+            while (len >= SERVER_SEND_MSG_SIZE)
+            {
+              if (flextcp_connection_rx_done(ctx, conn, SERVER_SEND_MSG_SIZE) != 0)
+              {
+                fprintf(stderr, "thread_event_rx: rx_done failed\n");
+                abort();
+              }
+              len -= SERVER_SEND_MSG_SIZE;
+              rx_bump += SERVER_SEND_MSG_SIZE;
+              //create a spin lock around max pending
+
+              if (!thread_ctx->params->client_of_server) {
+                recv_lat = get_nanos();
+                record_latency(recv_lat - sent_lat);
+              }
+
+              __sync_fetch_and_add(&max_pending, 1);
+              // we should update remaining bytes based on smaller messages.
+              // This line does not matter here! So I comment it cuz it won't be used in client sender
+              // __sync_fetch_and_add(&remaining_bytes, SERVER_SEND_MSG_SIZE);
+            }
+          }
+        }
+        else {
+          printf("EXIT due to wrong parameters\n");
+          abort();
+        }
+
         break;
+
+        //
+        // if (!thread_ctx->params->response)
+        // {
+        //   len = evs[i].ev.conn_received.len;
+        //   total_recv += len;
+        //   __sync_fetch_and_add(&remaining_bytes, len);
+        //   rx_bump += len;
+
+        //   if (flextcp_connection_rx_done(ctx, conn, len) != 0)
+        //   {
+        //     fprintf(stderr, "thread_event_rx: rx_done failed\n");
+        //     abort();
+        //   }
+        // }
+        // else {
+        //   len = len + evs[i].ev.conn_received.len;
+        //   total_recv += len;
+        //   while (len >= MSG_SIZE)
+        //   {
+        //     if (flextcp_connection_rx_done(ctx, conn, MSG_SIZE) != 0)
+        //     {
+        //       fprintf(stderr, "thread_event_rx: rx_done failed\n");
+        //       abort();
+        //     }
+        //     len -= MSG_SIZE;
+        //     rx_bump += MSG_SIZE;
+        //     //create a spin lock around max pending
+
+        //     if (!thread_ctx->params->client_of_server) {
+        //       recv_lat = get_nanos();
+        //       record_latency(recv_lat - sent_lat);
+        //     }
+
+        //     __sync_fetch_and_add(&max_pending, 1);
+        //     __sync_fetch_and_add(&remaining_bytes, MSG_SIZE);
+        //   }
+        // }
+
+        // break;
 
       case FLEXTCP_EV_CONN_SENDBUF:
         printf("FLEXCONN_SENDBUF %lu\n", remaining_bytes);

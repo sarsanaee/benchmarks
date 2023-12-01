@@ -6,7 +6,7 @@
 
 #define MAX_EVENTS 32
 #define BATCH_SIZE 8
-#define MSG_SIZE 64 // 1KB
+#define MSG_SIZE 8192 // 1KB
 
 struct params {
   uint32_t conns;
